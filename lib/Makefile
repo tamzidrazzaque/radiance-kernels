@@ -33,7 +33,7 @@ LLVM_CFLAGS += -Xclang -target-feature -Xclang +vortex -mllvm -vortex-branch-div
 
 # CC  = $(RISCV_TOOLCHAIN_PATH)/bin/$(RISCV_PREFIX)-gcc
 # CXX = $(RISCV_TOOLCHAIN_PATH)/bin/$(RISCV_PREFIX)-g++
-AR  = $(RISCV_TOOLCHAIN_PATH)/bin/$(RISCV_PREFIX)-gcc-ar
+AR  ?= $(LLVM_MUON)/bin/llvm-ar
 # DP  = $(RISCV_TOOLCHAIN_PATH)/bin/$(RISCV_PREFIX)-objdump
 # CP  = $(RISCV_TOOLCHAIN_PATH)/bin/$(RISCV_PREFIX)-objcopy
 
@@ -67,6 +67,7 @@ MU_CFLAGS += -mllvm -riscv-stack-word-stride=$(MU_STACK_WORD_STRIDE)
 endif
 # extra device-side defines for the runtime build (e.g. -DRAD_EPI_PROBE_O=...)
 MU_CFLAGS += $(MU_EXTRA_DEFS)
+MU_CFLAGS += -stdlib=libc++
 ifeq (1,0)
 endif
 
