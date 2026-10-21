@@ -5,6 +5,7 @@
 #endif
 
 #include "generated/config.h"
+#include <nightly/host.h>
 #include "generated/symbols.h"
 
 static uint64_t output_digest() {
@@ -58,6 +59,7 @@ static void clear_output() {
 int main() {
   tohost = 0;
   *tocpu = 0;
+  WRITE_MMIO_32(RAD_HOST_GPU_RESET, 1);
   volatile uint32_t* before = reinterpret_cast<volatile uint32_t*>(
       rad_device_to_host_address(SPATTER_GUARD_BEFORE_ADDR));
   volatile uint32_t* after = reinterpret_cast<volatile uint32_t*>(
@@ -67,19 +69,21 @@ int main() {
     after[i] = 0x5A5A0000u ^ i;
   }
   clear_output();
+  nightly_host_launch(MU_NUM_CLUSTERS);
   asm volatile("fence rw, rw" ::: "memory");
 #ifdef RAD_HOST_TIMING
   const uint64_t release_cycle = rad_rdcycle();
 #endif
   WRITE_MMIO_32(RAD_HOST_GPU_RESET, 0);
 
-  while (!READ_MMIO_32(RAD_HOST_GPU_ALL_FINISHED)) {}
+  const bool completed = nightly_host_wait(MU_NUM_CLUSTERS) != 0;
 #ifdef RAD_HOST_TIMING
   const uint64_t completion_cycle = rad_rdcycle();
+  if (completed) nightly_host_report(MU_NUM_CLUSTERS);
 #endif
   asm volatile("fence rw, rw" ::: "memory");
 
-  bool passed = guards_intact();
+  bool passed = completed && guards_intact();
 #if SPATTER_EXPLORATORY
   // Read a destination known to be written. Its final value depends on
   // scheduling when several threads target the same address.

@@ -1,11 +1,11 @@
 #include "generated/config.h"
 
-#include <mu_intrinsics.h>
-#include <mu_schedule.h>
 #include <stdint.h>
 
 #define STREAM_WARPS 4
-extern "C" uint32_t __mu_num_warps = STREAM_WARPS;
+#define NIGHTLY_OCC STREAM_WARPS
+#define NIGHTLY_CLUSTERS MU_NUM_CLUSTERS
+#include <nightly/device.h>
 
 extern "C" {
 extern __global float stream_a[];
@@ -30,10 +30,9 @@ static void kernel_body(void*, uint32_t tid, uint32_t threads_per_block,
     if (STREAM_ELEMENTS - i <= global_threads) break;
     i += global_threads;
   }
+  nightly_kernel_end(tid, threads_per_block);
 }
 
 int main() {
-  mu_schedule(kernel_body, nullptr, STREAM_WARPS);
-  mu_fence();
-  return 0;
+  return nightly_main(kernel_body, nullptr);
 }

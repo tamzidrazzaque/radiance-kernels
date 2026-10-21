@@ -1,12 +1,13 @@
 #include "generated/config.h"
 
-#include <mu_intrinsics.h>
-#include <mu_schedule.h>
 #include <stdint.h>
-#include "spatter_ops.hpp"
 
 #define SPATTER_NUM_WARPS 4
-extern "C" uint32_t __mu_num_warps = SPATTER_NUM_WARPS;
+#define NIGHTLY_OCC SPATTER_NUM_WARPS
+#define NIGHTLY_CLUSTERS MU_NUM_CLUSTERS
+#include <nightly/device.h>
+
+#include "spatter_ops.hpp"
 
 extern "C" {
 extern __global uint32_t spatter_pattern[];
@@ -87,12 +88,11 @@ static void chain_body(void* arg, uint32_t tid, uint32_t threads_per_block,
   // worker output blocks unwritten in the full-size timing simulation.
   mu_barrier(1, SPATTER_NUM_WARPS * MU_NUM_CORES);
   scatter_stage(arg, tid, threads_per_block, block_id);
+  nightly_kernel_end(tid, threads_per_block);
 }
 
 int main() {
-  mu_schedule(chain_body, nullptr, SPATTER_NUM_WARPS);
-  mu_fence();
-  return 0;
+  return nightly_main(chain_body, nullptr);
 }
 
 #else
@@ -191,11 +191,10 @@ static void kernel_body(void*, uint32_t tid, uint32_t threads_per_block,
   }
 #endif
 #endif
+  nightly_kernel_end(tid, threads_per_block);
 }
 
 int main() {
-  mu_schedule(kernel_body, nullptr, SPATTER_NUM_WARPS);
-  mu_fence();
-  return 0;
+  return nightly_main(kernel_body, nullptr);
 }
 #endif
