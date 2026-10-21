@@ -112,7 +112,12 @@ static void mu_barrier(unsigned barried_id, unsigned num_warps) {
 #define MU_NUM_WARPS 8
 #define MU_NUM_CORES 2
 #define MU_NUM_MAX_WARPS 8
+#ifndef MU_NUM_CLUSTERS
 #define MU_NUM_CLUSTERS 1
+#endif
+#if MU_NUM_CLUSTERS < 1
+#error "MU_NUM_CLUSTERS must be positive"
+#endif
 #define MU_BLOCK_NUM_WARPS(n) (MU_NUM_CORES * (n))
 #define MU_BLOCK_SIZE(n) (MU_BLOCK_NUM_WARPS(n) * MU_NUM_THREADS)
 #define MU_DOUBLE_BLOCK_SIZE(n) (MU_BLOCK_SIZE(n) * 2)

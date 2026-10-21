@@ -10,12 +10,24 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from run import (destination, fnv, normalize, parse_pattern, payload, reference,
-                 sample_digest, source_index, source_tag, write_source)
+                 sample_digest, source_index, source_tag, write_source,
+                 muon_topology)
 from plan import execute_reference, fuse_gather_scatter, stitch_reference
 from run_chain import expected_output
 
 
 class SpatterMappingTest(unittest.TestCase):
+    def test_muon_topology(self):
+        one = muon_topology(1)
+        two = muon_topology(2)
+        self.assertEqual(one["muon_total_cores"], 2)
+        self.assertEqual(one["muon_hardware_warps_per_core"], 8)
+        self.assertEqual(one["muon_launch_total_threads"], 128)
+        self.assertEqual(two["muon_total_cores"], 4)
+        self.assertEqual(two["muon_launch_total_threads"], 256)
+        with self.assertRaisesRegex(ValueError, "muon_clusters"):
+            muon_topology(3)
+
     def test_standard_gpu_stream_families(self):
         suite = json.loads((Path(__file__).parent / "smoke.json").read_text())
         for raw in suite[:5]:

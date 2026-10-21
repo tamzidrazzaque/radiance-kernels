@@ -5,7 +5,7 @@ with the Spatter measurements.
 
 The four independent STREAM operations use float32 arrays: Copy `C=A`, Scale
 `B=2*C`, Add `C=A+B`, and Triad `A=B+2*C`. They build through `../common.mk`
-and run on the same one-cluster Radiance SoC as `kernels/spatter`. The generated
+and run on the same Radiance SoC as `kernels/spatter`. The generated
 inputs are exact small integers in float32, so the expected output digest does
 not depend on rounding differences. One operation runs per ELF; a complete
 four-stage STREAM sequence would use a different data dependency and timing
@@ -30,6 +30,14 @@ up to 1024 elements and 64 samples for larger arrays; Cyclotron can check the
 complete output. `output_elements` in the manifest is the number of 64-bit
 pairs passed to Spatter's reusable Cyclotron checker; `stream_elements` is the
 actual number of float32 values.
+
+The default is the one-cluster/two-core topology. Pass `--muon-clusters 2`
+only for a Radiance TwoCluster target (two clusters with two Muon cores each).
+The selected cluster, core, warp and thread counts are recorded in the
+manifest and emitted into `generated/config.h`, so changing the option rebuilds
+the device object. The compiled cluster count must match the target: a
+one-cluster binary on a two-cluster target duplicates work across clusters and
+can still pass a deterministic output check while reporting invalid timing.
 
 Set `MU_ADDR_HASH=1` for the newer hashed `RadianceHBMConfig` when loading
 DRAM directly with `+loadmem` or FireSim LoadMem; the hash parameters must

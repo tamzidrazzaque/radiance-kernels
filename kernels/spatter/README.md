@@ -122,6 +122,14 @@ python3 run.py --suite smoke.json --case 0 --out runs/smoke-0 --build-only
 pattern. It is not performance-equivalent to the original repetition count.
 The output directory contains `kernel.soc.elf`, `result.json`, and `build.log`.
 
+The default is the one-cluster/two-core topology. Pass `--muon-clusters 2`
+only for a Radiance TwoCluster target (two clusters with two Muon cores each).
+The selected cluster, core, warp and thread counts are recorded in the
+manifest and emitted into `generated/config.h`, so changing the option rebuilds
+the device object. The compiled cluster count must match the target: a
+one-cluster binary on a two-cluster target duplicates work across clusters and
+can still pass a deterministic output check while reporting invalid timing.
+
 For the newer hashed `RadianceHBMConfig` with direct DRAM loading (`+loadmem`
 or FireSim LoadMem), set `MU_ADDR_HASH=1` when building. The hash parameters
 must match the RTL. Use `MU_ADDR_HASH=0` for the earlier unhashed image or a

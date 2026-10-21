@@ -27,6 +27,34 @@ ARRAYS = (
     "pattern", "pattern_gather", "pattern_scatter", "sparse", "dense",
     "sparse_gather", "sparse_scatter", "group_offsets", "group_tasks",
 )
+MUON_CORES_PER_CLUSTER = 2
+MUON_LANES_PER_WARP = 16
+MUON_HARDWARE_WARPS_PER_CORE = 8
+MUON_LAUNCH_WARPS_PER_CORE = 4
+SUPPORTED_MUON_CLUSTERS = (1, 2)
+
+
+def muon_topology(clusters: int) -> dict:
+    if clusters not in SUPPORTED_MUON_CLUSTERS:
+        raise ValueError(
+            f"muon_clusters must be one of {SUPPORTED_MUON_CLUSTERS}"
+        )
+    launch_threads_per_cluster = (
+        MUON_CORES_PER_CLUSTER * MUON_LAUNCH_WARPS_PER_CORE *
+        MUON_LANES_PER_WARP
+    )
+    return {
+        "muon_clusters": clusters,
+        "muon_cores_per_cluster": MUON_CORES_PER_CLUSTER,
+        "muon_total_cores": clusters * MUON_CORES_PER_CLUSTER,
+        # Keep the historical field while making its launch meaning explicit.
+        "muon_warps_per_core": MUON_LAUNCH_WARPS_PER_CORE,
+        "muon_hardware_warps_per_core": MUON_HARDWARE_WARPS_PER_CORE,
+        "muon_launch_warps_per_core": MUON_LAUNCH_WARPS_PER_CORE,
+        "muon_lanes_per_warp": MUON_LANES_PER_WARP,
+        "muon_launch_threads_per_cluster": launch_threads_per_cluster,
+        "muon_launch_total_threads": clusters * launch_threads_per_cluster,
+    }
 
 
 def positive(value: object, name: str, allow_zero: bool = False) -> int:
@@ -293,7 +321,8 @@ def write_destination_groups(case: dict) -> None:
     write_u32(GENERATED / "group_tasks.bin", ordered)
 
 
-def prepare(case: dict, suite: Path, case_id: int) -> dict:
+def prepare(case: dict, suite: Path, case_id: int,
+            muon_clusters: int = 1) -> dict:
     GENERATED.mkdir(exist_ok=True)
     write_u32(GENERATED / "pattern.bin", case["pattern"])
     write_u32(GENERATED / "pattern_gather.bin", case["gather"])
@@ -310,8 +339,10 @@ def prepare(case: dict, suite: Path, case_id: int) -> dict:
     probe_index = destination(case, 0, 0) if exploratory else 0
     readback_samples = min(64, case["dst_length"]) if case["dst_length"] > 1024 and not exploratory else 0
     expected_sample = sample_digest(case, readback_samples) if readback_samples else 0
+    topology = muon_topology(muon_clusters)
     lines = [
         "#pragma once",
+        f"#define MU_NUM_CLUSTERS {muon_clusters}",
         f"#define SPATTER_KIND {KINDS[case['kind']]}",
         "#define SPATTER_CHAIN 0",
         f"#define SPATTER_PATTERN_LENGTH {case['length']}u",
@@ -362,7 +393,6 @@ def prepare(case: dict, suite: Path, case_id: int) -> dict:
         "source_index_base": case.get("source_index_base", 0),
         "source_tag": case["payload_tag"],
         "requested_local_work_size": case["requested_local_work_size"],
-        "muon_warps_per_core": 4,
         "source_elements": case["src_length"], "output_elements": case["dst_length"],
         "logical_payload_bytes": case["count"] * case["length"] * 16,
         "expected_digest": None if expected is None else f"{expected:016x}",
@@ -372,6 +402,7 @@ def prepare(case: dict, suite: Path, case_id: int) -> dict:
         "destination_overlap": overlap,
         "collision_policy": case["collision_policy"],
         "status": "prepared",
+        **topology,
     }
     (GENERATED / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     return manifest
@@ -421,6 +452,9 @@ def main() -> int:
                         help="read and digest every output word on the RV64 host")
     parser.add_argument("--host-timing", action="store_true",
                         help="print RV64 release-to-all-finished cycle interval")
+    parser.add_argument("--muon-clusters", type=int,
+                        choices=SUPPORTED_MUON_CLUSTERS, default=1,
+                        help="compiled Radiance cluster count (default: 1)")
     parser.add_argument("--sim-only", action="store_true",
                         help="run an already built ELF from --out without regenerating inputs")
     parser.add_argument("--simv", type=Path, help="VCS simulator for the pinned Radiance checkout")
@@ -470,7 +504,7 @@ def main() -> int:
                 parser.error("the iteration chunk extends past the original count")
         case["iteration_start"] = args.iteration_start
         case["source_index_base"] = args.iteration_start * case["delta"]
-        manifest = prepare(case, args.suite, args.case)
+        manifest = prepare(case, args.suite, args.case, args.muon_clusters)
         manifest["original_count"] = original_count
         manifest["count_overridden"] = args.count is not None and args.count != original_count
         manifest["spatter_revision"] = git_revision(args.suite.parent)

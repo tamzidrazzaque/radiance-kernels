@@ -1,8 +1,8 @@
+#include "generated/config.h"
+
 #include <mu_intrinsics.h>
 #include <mu_schedule.h>
 #include <stdint.h>
-
-#include "generated/config.h"
 
 #define STREAM_WARPS 4
 extern "C" uint32_t __mu_num_warps = STREAM_WARPS;

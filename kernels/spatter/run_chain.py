@@ -12,8 +12,9 @@ import shutil
 import subprocess
 
 from run import (GENERATED, ROOT, destination, fnv, normalize, payload,
-                 source_hash, source_index, write_destination_groups,
-                 write_source, write_u32)
+                 source_hash, source_index, SUPPORTED_MUON_CLUSTERS,
+                 muon_topology, write_destination_groups, write_source,
+                 write_u32)
 
 
 def selected(path: Path, index: int) -> dict:
@@ -48,7 +49,8 @@ def expected_output(gather: dict, scatter: dict) -> tuple[array, bool]:
 
 
 def prepare(gather: dict, scatter: dict, suites: tuple[Path, Path],
-            cases: tuple[int, int], out: Path) -> dict:
+            cases: tuple[int, int], out: Path,
+            muon_clusters: int = 1) -> dict:
     if gather["kind"] != "gather" or scatter["kind"] != "scatter":
         raise ValueError("chain needs Gather followed by Scatter")
     if gather["dst_length"] != scatter["src_length"]:
@@ -77,8 +79,10 @@ def prepare(gather: dict, scatter: dict, suites: tuple[Path, Path],
     samples = min(64, len(output)) if len(output) > 1024 else 0
     positions = [i * (len(output) - 1) // (samples - 1) for i in range(samples)] if samples else []
     expected_sample = fnv(output[i] for i in positions) if samples else None
+    topology = muon_topology(muon_clusters)
     config = [
-        "#pragma once", "#define SPATTER_KIND 2", "#define SPATTER_CHAIN 1",
+        "#pragma once", f"#define MU_NUM_CLUSTERS {muon_clusters}",
+        "#define SPATTER_KIND 2", "#define SPATTER_CHAIN 1",
         f"#define SPATTER_GATHER_LENGTH {gather['length']}u",
         f"#define SPATTER_GATHER_COUNT {gather['count']}u",
         f"#define SPATTER_GATHER_WRAP {gather['wrap']}u",
@@ -142,6 +146,7 @@ def prepare(gather: dict, scatter: dict, suites: tuple[Path, Path],
         "kernel_source_sha256": kernel_hash.hexdigest(),
         "correctness": "sample-checked" if samples else "digest-checked",
         "status": "prepared", "simulator": None,
+        **topology,
     }
     out.mkdir(parents=True, exist_ok=True)
     (out / "result.json").write_text(json.dumps(manifest, indent=2) + "\n")
@@ -156,13 +161,17 @@ def main() -> None:
     parser.add_argument("scatter_case", type=int)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--prepare-only", action="store_true")
+    parser.add_argument("--muon-clusters", type=int,
+                        choices=SUPPORTED_MUON_CLUSTERS, default=1,
+                        help="compiled Radiance cluster count (default: 1)")
     args = parser.parse_args()
     gather = selected(args.gather_suite, args.gather_case)
     scatter = selected(args.scatter_suite, args.scatter_case)
     out = args.out.resolve()
     manifest = prepare(gather, scatter,
                        (args.gather_suite, args.scatter_suite),
-                       (args.gather_case, args.scatter_case), out)
+                       (args.gather_case, args.scatter_case), out,
+                       args.muon_clusters)
     if args.prepare_only:
         return
     with (out / "build.log").open("w") as log:

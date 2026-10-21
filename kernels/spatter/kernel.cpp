@@ -1,8 +1,8 @@
+#include "generated/config.h"
+
 #include <mu_intrinsics.h>
 #include <mu_schedule.h>
 #include <stdint.h>
-
-#include "generated/config.h"
 #include "spatter_ops.hpp"
 
 #define SPATTER_NUM_WARPS 4
