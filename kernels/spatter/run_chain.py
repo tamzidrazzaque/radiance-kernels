@@ -12,9 +12,17 @@ import shutil
 import subprocess
 
 from run import (GENERATED, ROOT, destination, fnv, normalize, payload,
-                 source_hash, source_index, SUPPORTED_MUON_CLUSTERS,
-                 muon_topology, write_destination_groups, write_source,
-                 write_u32)
+                 source_hash, source_index, muon_topology,
+                 write_destination_groups, write_source, write_u32)
+
+
+def chain_topology(clusters: int) -> dict:
+    if clusters != 1:
+        raise ValueError(
+            "the materialized chain requires one Muon cluster because its "
+            "stage barrier is cluster-local"
+        )
+    return muon_topology(clusters)
 
 
 def selected(path: Path, index: int) -> dict:
@@ -51,6 +59,7 @@ def expected_output(gather: dict, scatter: dict) -> tuple[array, bool]:
 def prepare(gather: dict, scatter: dict, suites: tuple[Path, Path],
             cases: tuple[int, int], out: Path,
             muon_clusters: int = 1) -> dict:
+    topology = chain_topology(muon_clusters)
     if gather["kind"] != "gather" or scatter["kind"] != "scatter":
         raise ValueError("chain needs Gather followed by Scatter")
     if gather["dst_length"] != scatter["src_length"]:
@@ -79,7 +88,6 @@ def prepare(gather: dict, scatter: dict, suites: tuple[Path, Path],
     samples = min(64, len(output)) if len(output) > 1024 else 0
     positions = [i * (len(output) - 1) // (samples - 1) for i in range(samples)] if samples else []
     expected_sample = fnv(output[i] for i in positions) if samples else None
-    topology = muon_topology(muon_clusters)
     config = [
         "#pragma once", f"#define MU_NUM_CLUSTERS {muon_clusters}",
         "#define SPATTER_KIND 2", "#define SPATTER_CHAIN 1",
@@ -162,8 +170,8 @@ def main() -> None:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--muon-clusters", type=int,
-                        choices=SUPPORTED_MUON_CLUSTERS, default=1,
-                        help="compiled Radiance cluster count (default: 1)")
+                        choices=(1,), default=1,
+                        help="compiled cluster count; the staged chain requires 1")
     args = parser.parse_args()
     gather = selected(args.gather_suite, args.gather_case)
     scatter = selected(args.scatter_suite, args.scatter_case)

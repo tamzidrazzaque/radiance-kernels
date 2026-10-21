@@ -129,6 +129,10 @@ manifest and emitted into `generated/config.h`, so changing the option rebuilds
 the device object. The compiled cluster count must match the target: a
 one-cluster binary on a two-cluster target duplicates work across clusters and
 can still pass a deterministic output check while reporting invalid timing.
+This option applies to `run.py`'s single-stage and fused mappings. The
+materialized Gather-to-Scatter `run_chain.py` remains one-cluster-only: its
+stage barrier is cluster-local, but Scatter may consume intermediate values
+produced by another cluster.
 
 For the newer hashed `RadianceHBMConfig` with direct DRAM loading (`+loadmem`
 or FireSim LoadMem), set `MU_ADDR_HASH=1` when building. The hash parameters

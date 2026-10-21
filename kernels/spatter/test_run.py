@@ -13,7 +13,7 @@ from run import (destination, fnv, normalize, parse_pattern, payload, reference,
                  sample_digest, source_index, source_tag, write_source,
                  muon_topology)
 from plan import execute_reference, fuse_gather_scatter, stitch_reference
-from run_chain import expected_output
+from run_chain import chain_topology, expected_output
 
 
 class SpatterMappingTest(unittest.TestCase):
@@ -27,6 +27,11 @@ class SpatterMappingTest(unittest.TestCase):
         self.assertEqual(two["muon_launch_total_threads"], 256)
         with self.assertRaisesRegex(ValueError, "muon_clusters"):
             muon_topology(3)
+
+    def test_materialized_chain_rejects_multiple_clusters(self):
+        self.assertEqual(chain_topology(1)["muon_clusters"], 1)
+        with self.assertRaisesRegex(ValueError, "cluster-local"):
+            chain_topology(2)
 
     def test_standard_gpu_stream_families(self):
         suite = json.loads((Path(__file__).parent / "smoke.json").read_text())
