@@ -43,17 +43,24 @@ Set `MU_ADDR_HASH=1` for the newer hashed `RadianceHBMConfig` when loading
 DRAM directly with `+loadmem` or FireSim LoadMem; the hash parameters must
 match the RTL. Use `MU_ADDR_HASH=0` for the earlier unhashed image or a TSI
 loader. The Makefile rebuilds the fused ELF when the hash setting changes.
-The results below remain tied to their recorded hardware image and ELF.
+The manifest records the effective size, unit, slice count, GPU host base and
+required load path. The results below remain tied to their recorded hardware
+image and ELF.
 
 For a complete host check on a larger array, add `--full-host-check`. Add
 `--host-timing` to print `HOST_RELEASE_TO_DONE_CYCLES` in the guest UART. This
 counts RV64 host cycles from just before Muon reset release until the
-all-finished register is observed. It excludes the later digest/readback and
-most boot and input setup, but includes MMIO, launch and completion polling.
-The interval is not a per-core GPU cycle count; compare it with other runs
-only after recording the host clock domain and hardware revision. The flag
-changes only the RV64 host; the RV32 Muon image was checked byte-for-byte
-against the untimed 256-element Copy smoke build.
+END mailbox from every selected Muon core is observed. Every kernel thread
+first reaches a block barrier; one warp then executes `mu_fence` on each core
+before its lane 0 posts END. The interval therefore ends after the selected
+cores' L0d fences complete and excludes the later UART report and digest
+readback. The UART also reports `kernel_cycles` from the earliest per-core
+START to the latest END in Muon `mcycle` units. Targets must correctly decode
+`lw.shared`/`sw.shared` for the mailboxes and implement the per-core fence;
+raw `GPU_ALL_FINISHED` is not a substitute. The host poisons the complete
+NOBITS output with quiet NaNs before the timestamp, so skipped or partial
+writes cannot pass by inheriting a previous result. Timed and untimed builds
+retain byte-identical embedded RV32 images.
 
 Use `../spatter/tools/spatter-verilator-run.py` and
 `../spatter/tools/spatter-cyclotron-run.py` with `--source-root runs` and a

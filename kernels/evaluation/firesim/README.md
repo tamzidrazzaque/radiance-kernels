@@ -171,14 +171,16 @@ emulation rates, not a calibrated Radiance GPU clock.
 
 The STREAM and Spatter builders now accept `--host-timing`, which instruments
 the RV64 host immediately before releasing Muon reset and after the
-all-finished register asserts. The 256-element Copy and two-repetition Gather
-smoke builds have byte-identical RV32 device images with and without the flag.
-The interval still needs a passing FPGA guest run and an explicit host
-clock-domain interpretation before it can enter this comparison table. It
-includes launch and polling, so it is not a Muon core cycle count. Per-core
-utilization and calibrated memory bandwidth require counters or traces that
-this bitstream does not currently export. The present comparison table uses
-the existing RTL and model measurements for those quantities.
+END mailbox from every selected Muon core is observed. Kernel END follows a
+block barrier and one completed `mu_fence` per core; the later UART report and
+output readback are excluded. The host additionally prints per-core START/END
+stamps and an aggregate Muon `kernel_cycles`. Timed and untimed builds have
+byte-identical embedded RV32 device images. This protocol requires target RTL
+that decodes `lw.shared`/`sw.shared`; old images that only expose raw
+all-finished cannot provide this evidence. A result still needs a passing FPGA
+guest run and explicit clock-domain interpretation before it enters the
+comparison table. Per-core utilization and calibrated memory bandwidth
+require counters or traces that this bitstream does not currently export.
 
 ## Per-case results
 

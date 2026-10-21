@@ -138,7 +138,8 @@ For the newer hashed `RadianceHBMConfig` with direct DRAM loading (`+loadmem`
 or FireSim LoadMem), set `MU_ADDR_HASH=1` when building. The hash parameters
 must match the RTL. Use `MU_ADDR_HASH=0` for the earlier unhashed image or a
 TSI loader. The Makefile rebuilds the fused ELF when the hash setting changes;
-the FPGA and RTL results below remain measurements of their recorded images.
+the manifest records the effective hash parameters and required load path.
+The FPGA and RTL results below remain measurements of their recorded images.
 
 The RV64 host clears the complete output before releasing Muon reset. This is
 required for U250 FireSim: the fused RV32 BSS output has no initialized ELF
@@ -149,11 +150,14 @@ correctness evidence but adds readback time to whole-program target cycles;
 see the [U250 follow-up](../evaluation/firesim/output-initialization/README.md).
 Pass `--host-timing` to print `HOST_RELEASE_TO_DONE_CYCLES` in the guest UART.
 It reads the RV64 host cycle counter just before Muon reset release and just
-after all-finished is observed, before output readback. The interval includes
-MMIO, launch and polling; it is not a Muon core cycle count or calibrated GPU
-time. A timed two-repetition Gather smoke build has a byte-identical RV32
-image to its untimed control. Both flags require a rebuild and cannot be
-added to an ELF through `--sim-only`.
+after every selected core posts its END mailbox, before output readback. Every
+thread first reaches a block barrier; one warp executes `mu_fence` on each
+core before lane 0 posts END. The UART also prints `kernel_cycles` from the
+earliest per-core START to the latest END in Muon `mcycle` units. Targets must
+decode `lw.shared`/`sw.shared` and implement the fence; raw
+`GPU_ALL_FINISHED` is not a drained completion boundary. Timed and untimed
+builds have byte-identical embedded RV32 images. Both flags require a rebuild
+and cannot be added to an ELF through `--sim-only`.
 The [complete standard-suite JSON set](inputs/README.md) and its
 [native-size inventory](evaluation/native-workload-footprint.csv) are tracked
 here. The inventory covers 114 cases; it is a feasibility audit, not a list
