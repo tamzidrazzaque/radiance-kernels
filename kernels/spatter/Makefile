@@ -17,7 +17,7 @@ MU_NM = $(LLVM_MUON)/bin/llvm-nm
 
 # Match other radiance-kernels directories: plain `make` has a small default
 # input. run.py prepares a selected benchmark before invoking this same Makefile.
-data.S generated/config.h generated/pattern.bin generated/pattern_gather.bin generated/pattern_scatter.bin generated/source.bin generated/group_offsets.bin generated/group_tasks.bin &: run.py plan.py smoke.json
+data.S generated/config.h generated/pattern.bin generated/pattern_gather.bin generated/pattern_scatter.bin generated/source.bin generated/group_offsets.bin generated/group_tasks.bin generated/host-build-settings.json &: run.py plan.py smoke.json
 	python3 run.py --suite smoke.json --case 0 --out runs/default --prepare-only
 
 data.mu.o: data.S generated/pattern.bin generated/pattern_gather.bin generated/pattern_scatter.bin generated/source.bin generated/group_offsets.bin generated/group_tasks.bin
@@ -28,7 +28,7 @@ kernel.mu.o: generated/config.h spatter_ops.hpp
 generated/symbols.h: kernel.radiance.elf generated/config.h emit_symbols.py
 	python3 emit_symbols.py $(MU_NM) $< $@
 
-host.host.o: generated/config.h generated/symbols.h
+host.host.o: generated/config.h generated/symbols.h generated/host-build-settings.json
 
 .PHONY: clean-generated
 clean-generated:

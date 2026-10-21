@@ -18,6 +18,16 @@ from pathlib import Path
 from plan import plan_for
 
 ROOT = Path(__file__).resolve().parent
+REPO_ROOT = ROOT.parents[1]
+sys.path.insert(0, str(ROOT.parent))
+
+from build_metadata import (  # noqa: E402
+    COMPLETION_PROTOCOL,
+    address_hash_metadata,
+    artifact_metadata,
+    source_bundle_sha256,
+)
+
 GENERATED = ROOT / "generated"
 MASK64 = (1 << 64) - 1
 FNV_OFFSET = 0xCBF29CE484222325
@@ -402,6 +412,15 @@ def prepare(case: dict, suite: Path, case_id: int,
         "destination_overlap": overlap,
         "collision_policy": case["collision_policy"],
         "status": "prepared",
+        "output_precondition": "zero-filled-before-timestamp",
+        "completion_protocol": COMPLETION_PROTOCOL,
+        "completion_timing_boundary": (
+            "reset-release-to-all-selected-cores-END-after-block-barrier-and-mu-fence"
+        ),
+        "completion_rtl_requirement": (
+            "Muon lw.shared/sw.shared printBuf decode and functional per-core mu_fence"
+        ),
+        **address_hash_metadata(),
         **topology,
     }
     (GENERATED / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
@@ -424,15 +443,34 @@ def git_revision(path: Path) -> str | None:
 
 
 def source_hash() -> str:
-    digest = hashlib.sha256()
-    build_rules = ROOT.parent / "addr_hash_stamp.mk"
-    digest.update(str(build_rules.name).encode())
-    digest.update(build_rules.read_bytes())
-    for name in ("run.py", "plan.py", "Makefile", "kernel.cpp", "spatter_ops.hpp", "host.cpp",
-                 "emit_symbols.py", "cyclotron-no-trace.patch"):
-        digest.update(name.encode())
-        digest.update((ROOT / name).read_bytes())
-    return digest.hexdigest()
+    shared = [
+        ROOT.parent / "addr_hash_stamp.mk",
+        ROOT.parent / "build_metadata.py",
+        ROOT.parent / "common.mk",
+        REPO_ROOT / "lib/include/mu_intrinsics.h",
+        REPO_ROOT / "lib/include/mu_schedule.h",
+        REPO_ROOT / "lib/include/nightly/device.h",
+        REPO_ROOT / "lib/include/nightly/host.h",
+        REPO_ROOT / "lib/include/nightly/pb.h",
+        REPO_ROOT / "lib/linker/mu_link.ld",
+        REPO_ROOT / "lib/tohost.S",
+        REPO_ROOT / "soc/fuse_rv32_into_rv64.sh",
+        REPO_ROOT / "soc/scramble_gpu_elf.py",
+        REPO_ROOT / "soc/start.S",
+    ]
+    local = [
+        ROOT / name for name in
+        ("run.py", "plan.py", "Makefile", "kernel.cpp", "spatter_ops.hpp",
+         "host.cpp", "emit_symbols.py", "cyclotron-no-trace.patch")
+    ]
+    return source_bundle_sha256(REPO_ROOT, shared + local)
+
+
+def write_host_build_settings(settings: dict) -> None:
+    path = GENERATED / "host-build-settings.json"
+    content = json.dumps(settings, sort_keys=True) + "\n"
+    if not path.exists() or path.read_text() != content:
+        path.write_text(content)
 
 
 def main() -> int:
@@ -451,7 +489,7 @@ def main() -> int:
     parser.add_argument("--full-host-check", action="store_true",
                         help="read and digest every output word on the RV64 host")
     parser.add_argument("--host-timing", action="store_true",
-                        help="print RV64 release-to-all-finished cycle interval")
+                        help="print RV64 reset-release-to-drained-mailbox cycle interval")
     parser.add_argument("--muon-clusters", type=int,
                         choices=SUPPORTED_MUON_CLUSTERS, default=1,
                         help="compiled Radiance cluster count (default: 1)")
@@ -508,7 +546,9 @@ def main() -> int:
         manifest["original_count"] = original_count
         manifest["count_overridden"] = args.count is not None and args.count != original_count
         manifest["spatter_revision"] = git_revision(args.suite.parent)
-        manifest["kernel_revision"] = git_revision(ROOT)
+        manifest["kernel_revision"] = git_revision(REPO_ROOT)
+        manifest["llvm_source_revision"] = git_revision(REPO_ROOT / "llvm/llvm-src")
+        manifest["mxgemmini_revision"] = git_revision(REPO_ROOT / "lib/mxgemmini")
         manifest["kernel_source_sha256"] = source_hash()
         manifest["radiance_revision"] = (
             git_revision(args.simv.resolve().parents[2] / "generators/radiance")
@@ -533,6 +573,12 @@ def main() -> int:
             (not manifest["readback_samples"] and
              manifest["correctness"] == "digest-checked")
         )
+        host_build_settings = {
+            "full_host_check": bool(args.full_host_check),
+            "host_timing": bool(args.host_timing),
+        }
+        write_host_build_settings(host_build_settings)
+        manifest["host_build_settings"] = host_build_settings
         manifest["host_timing_requested"] = args.host_timing
         (out / "result.json").write_text(json.dumps(manifest, indent=2) + "\n")
     if args.prepare_only:
@@ -552,6 +598,9 @@ def main() -> int:
             run_command(["make", "kernel.soc.elf"], out / "build.log", ROOT,
                         env=build_env)
             shutil.copy2(ROOT / "kernel.soc.elf", out / "kernel.soc.elf")
+            manifest["artifacts"] = artifact_metadata(
+                REPO_ROOT, ROOT, include_hashed=bool(manifest["mu_addr_hash"])
+            )
             manifest["status"] = "built"
         if not args.build_only:
             if args.simv is None:

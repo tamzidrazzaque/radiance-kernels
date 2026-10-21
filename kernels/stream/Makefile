@@ -11,7 +11,7 @@ HOST_CXXFLAGS += -O3
 HOST_CXXFLAGS += $(EXTRA_HOST_CXXFLAGS)
 MU_NM = $(LLVM_MUON)/bin/llvm-nm
 
-data.S generated/config.h generated/a.bin generated/b.bin generated/c.bin &: run.py
+data.S generated/config.h generated/a.bin generated/b.bin generated/c.bin generated/host-build-settings.json &: run.py
 	python3 run.py --kind copy --elements 256 --out runs/default --prepare-only
 
 data.mu.o: data.S generated/a.bin generated/b.bin generated/c.bin
@@ -22,7 +22,7 @@ kernel.mu.o: generated/config.h
 generated/symbols.h: kernel.radiance.elf generated/config.h emit_symbols.py
 	python3 emit_symbols.py $(MU_NM) $< $@
 
-host.host.o: generated/config.h generated/symbols.h
+host.host.o: generated/config.h generated/symbols.h generated/host-build-settings.json
 
 .PHONY: clean-generated
 clean-generated:

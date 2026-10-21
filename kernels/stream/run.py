@@ -11,9 +11,20 @@ from pathlib import Path
 import shutil
 import struct
 import subprocess
+import sys
 
 
 ROOT = Path(__file__).resolve().parent
+REPO_ROOT = ROOT.parents[1]
+sys.path.insert(0, str(ROOT.parent))
+
+from build_metadata import (  # noqa: E402
+    COMPLETION_PROTOCOL,
+    address_hash_metadata,
+    artifact_metadata,
+    source_bundle_sha256,
+)
+
 GENERATED = ROOT / "generated"
 KINDS = {"copy": 0, "scale": 1, "add": 2, "triad": 3}
 OUTPUT = {"copy": "c", "scale": "b", "add": "c", "triad": "a"}
@@ -25,6 +36,44 @@ MUON_LANES_PER_WARP = 16
 MUON_HARDWARE_WARPS_PER_CORE = 8
 MUON_LAUNCH_WARPS_PER_CORE = 4
 SUPPORTED_MUON_CLUSTERS = (1, 2)
+
+
+def git_revision(path: Path) -> str | None:
+    result = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=False,
+    )
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def source_hash() -> str:
+    shared = [
+        ROOT.parent / "addr_hash_stamp.mk",
+        ROOT.parent / "build_metadata.py",
+        ROOT.parent / "common.mk",
+        REPO_ROOT / "lib/include/mu_intrinsics.h",
+        REPO_ROOT / "lib/include/mu_schedule.h",
+        REPO_ROOT / "lib/include/nightly/device.h",
+        REPO_ROOT / "lib/include/nightly/host.h",
+        REPO_ROOT / "lib/include/nightly/pb.h",
+        REPO_ROOT / "lib/linker/mu_link.ld",
+        REPO_ROOT / "lib/tohost.S",
+        REPO_ROOT / "soc/fuse_rv32_into_rv64.sh",
+        REPO_ROOT / "soc/scramble_gpu_elf.py",
+        REPO_ROOT / "soc/start.S",
+    ]
+    local = [
+        ROOT / name for name in
+        ("run.py", "Makefile", "kernel.cpp", "host.cpp", "emit_symbols.py")
+    ]
+    return source_bundle_sha256(REPO_ROOT, shared + local)
+
+
+def write_host_build_settings(settings: dict) -> None:
+    path = GENERATED / "host-build-settings.json"
+    content = json.dumps(settings, sort_keys=True) + "\n"
+    if not path.exists() or path.read_text() != content:
+        path.write_text(content)
 
 
 def muon_topology(clusters: int) -> dict:
@@ -124,12 +173,6 @@ def prepare(kind: str, elements: int, out: Path,
         '.globl stream_guard_after', 'stream_guard_after:', '.zero 64',
     ]
     (ROOT / "data.S").write_text("\n".join(asm) + "\n")
-    source = hashlib.sha256()
-    build_rules = ROOT.parent / "addr_hash_stamp.mk"
-    source.update(build_rules.name.encode())
-    source.update(build_rules.read_bytes())
-    for name in ("run.py", "Makefile", "kernel.cpp", "host.cpp", "emit_symbols.py"):
-        source.update((ROOT / name).read_bytes())
     case = {"kind": f"stream-{kind}", "stream_operation": kind,
             "pattern_length": elements, "stream_elements": elements,
             "count": 1, "output_elements": elements // 2,
@@ -140,12 +183,24 @@ def prepare(kind: str, elements: int, out: Path,
             "collision_policy": "parallel",
             "address_plan": {"read": "dense", "write": "dense", "operation": kind},
             "suite_sha256": hashlib.sha256(f"stream:{kind}:{elements}".encode()).hexdigest(),
-            "case": KINDS[kind], "kernel_source_sha256": source.hexdigest(),
+            "case": KINDS[kind], "kernel_source_sha256": source_hash(),
+            "kernel_revision": git_revision(REPO_ROOT),
+            "llvm_source_revision": git_revision(REPO_ROOT / "llvm/llvm-src"),
+            "mxgemmini_revision": git_revision(REPO_ROOT / "lib/mxgemmini"),
             "correctness": "sample-checked" if samples else "digest-checked",
             "host_full_readback": full_host_check or not samples,
             "status": "prepared", "simulator": None,
             "element_format": "float32", "output_element_count": elements,
             "checker_word_pairs": elements // 2,
+            "output_precondition": "quiet-NaN-poison-before-timestamp",
+            "completion_protocol": COMPLETION_PROTOCOL,
+            "completion_timing_boundary": (
+                "reset-release-to-all-selected-cores-END-after-block-barrier-and-mu-fence"
+            ),
+            "completion_rtl_requirement": (
+                "Muon lw.shared/sw.shared printBuf decode and functional per-core mu_fence"
+            ),
+            **address_hash_metadata(),
             **topology}
     (GENERATED / "manifest.json").write_text(json.dumps(case, indent=2) + "\n")
     out.mkdir(parents=True, exist_ok=True)
@@ -162,7 +217,7 @@ def main() -> None:
     parser.add_argument("--full-host-check", action="store_true",
                         help="digest every FP32 output word on the RV64 host")
     parser.add_argument("--host-timing", action="store_true",
-                        help="print RV64 release-to-all-finished cycle interval")
+                        help="print RV64 reset-release-to-drained-mailbox cycle interval")
     parser.add_argument("--muon-clusters", type=int,
                         choices=SUPPORTED_MUON_CLUSTERS, default=1,
                         help="compiled Radiance cluster count (default: 1)")
@@ -170,6 +225,9 @@ def main() -> None:
     out = args.out.resolve()
     case = prepare(args.kind, args.elements, out, args.full_host_check,
                    args.muon_clusters)
+    host_build_settings = {"host_timing": bool(args.host_timing)}
+    write_host_build_settings(host_build_settings)
+    case["host_build_settings"] = host_build_settings
     case["host_timing_requested"] = args.host_timing
     (out / "result.json").write_text(json.dumps(case, indent=2) + "\n")
     if args.prepare_only:
@@ -183,6 +241,9 @@ def main() -> None:
         subprocess.run(["make", "kernel.soc.elf"], cwd=ROOT, stdout=log,
                        stderr=subprocess.STDOUT, check=True, env=build_env)
     shutil.copy2(ROOT / "kernel.soc.elf", out / "kernel.soc.elf")
+    case["artifacts"] = artifact_metadata(
+        REPO_ROOT, ROOT, include_hashed=bool(case["mu_addr_hash"])
+    )
     case["status"] = "built"
     (out / "result.json").write_text(json.dumps(case, indent=2) + "\n")
     print(json.dumps(case, indent=2))
