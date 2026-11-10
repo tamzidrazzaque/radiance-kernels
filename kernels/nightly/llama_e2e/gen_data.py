@@ -29,7 +29,7 @@ Models:
              this quantized pipeline; top-1 agreement.
   llama7b    Llama-2-7B shapes, SYNTHETIC: random weights filled on the device before timing (one layer's
              weights shared by all 32 layers, one KV cache shared by all layers).  Performance only.
-  deepseek   DeepSeek-R1-Distill-Qwen-1.5B (Qwen2: q/k/v biases, added as the fused ROPE stages Q, K, V), REAL
+  deepseek   DeepSeek-R1-Distill-Qwen-1.5B (Qwen2: q/k/v biases, added as the ROPE phase stages Q, K, V), REAL
              weights; checked like tinyllama.  Uses regions 0 and 4 (nearly all 2 GiB).
   gemma2     Gemma-2-2B shapes and math, SYNTHETIC like llama7b (2.6 GB of fp8 weights do not fit 2 GiB): head dim
              256, GeGLU (tanh GELU), a post-norm on each residual branch (norm1 / norm2 / final normalize the branch
@@ -71,7 +71,7 @@ MODELS = {
     "smoke": dict(D=256, F=512, Hq=4, Hkv=2, hd=64, L=2, V=512, eps=1e-5, theta=10000.0, kind="random"),
     # smallest model with the ATTN (flash attention) phase: hd 128, >= 6 key blocks (use --ctx 768)
     "fasmoke": dict(D=256, F=512, Hq=2, Hkv=2, hd=128, L=1, V=512, eps=1e-5, theta=10000.0, kind="random"),
-    # the deepseek path (ATTN + fused ROPE with q/k/v biases) and the gemma2 path (hd 256, post-norms, GeGLU, caps)
+    # the deepseek path (ATTN + ROPE with q/k/v biases) and the gemma2 path (hd 256, post-norms, GeGLU, caps)
     "qwensmoke": dict(D=256, F=512, Hq=2, Hkv=2, hd=128, L=2, V=512, eps=1e-6, theta=10000.0, kind="random",
                       bias=True, ctx=768, fa_exact=True),
     # DeepSeek's attention shape on random weights: 12 query heads over 2 KV heads, hd 128, biases, exact max
@@ -627,10 +627,19 @@ def main():
                     help="at least this many LM-head column chunks (each its own GEMM phase; default: by size)")
     ap.add_argument("--fa-exact", choices=["auto", "0", "1"], default="auto",
                     help="ATTN max: 1 = the exact-max pre-pass, 0 = key block 0's max, auto = the model's setting")
+    ap.add_argument("--exact-emu", action="store_true",
+                    help="emulate in the device's own arithmetic (emu_exact.py: mx_golden GEMMs, fa_sa.h's softmax with "
+                         "the fpEX model, the kernels' reduction orders) for bit-exact goldens; slow (parallel "
+                         "mx_golden), for short models; 2 / 4-cluster norm order; not Gemma-2")
     ap.add_argument("--fa-impl", choices=["auto", "standalone", "port"], default="auto",
                     help="ATTN phase: standalone = fa_sa.h (nightly/fa_mxfp8_sr: compile-time shapes, block-0 max or "
                          "the exact-max pre-pass, O fused into oproj's operand), port = fa_phase.h (runtime shapes, "
-                         "same options); auto = standalone, port for exact-max models (DeepSeek)")
+                         "same options); auto = standalone")
+    ap.add_argument("--rope-fuse", choices=["auto", "on", "off"], default="auto",
+                    help="hd 128 prefill: run ROPE on the qkv GEMM's worker warps as its tiles land (on) or as its own "
+                         "phase after it (off: rope_fast.h, units owned by a core and split over its warps); auto = off, "
+                         "except q/k/v biases with a token range not 64-aligned (FireSim: off is 4-9 %% faster at 2 / 4 "
+                         "SM, the fused GEMM ran at 18-26 %% mesh; DeepSeek also wins at 1 SM, Llama-7B loses 1.8 %%)")
     ap.add_argument("--fa-dump", action="store_true",
                     help="build with -DLL_FA_DUMP=1: cluster 0 dumps layer 0's ATTN tile 0 (head 0, rows 0..63): S, P "
                          "per key block, m, l, unnormalized O; the host compares them with the emulation's (report only)")
@@ -673,19 +682,22 @@ def main():
         "P0 >= 128, Hq M / 64 % 4 == 0 and <= 64, no cap (or hd 256 + cap: >= 6 64-key blocks, Hq M / 32 % 4 == 0)"
     assert not (fa and a.debug_l0), "--debug-l0 checks the qk / softmax / pv phases"
     fa256 = fa and hd == 256                             # fa_sa256.h
-    # auto: fa_sa.h, except exact-max models (DeepSeek), which keep fa_phase.h: fa_sa.h's exact-max pre-pass gives wrong
-    # attention outputs on FireSim (2-layer DeepSeek runs 664 / 668: yattn 100 % off; fa_phase.h passes, run 663)
-    sa = fa and not fa256 and (a.fa_impl == "standalone" or (a.fa_impl == "auto" and not cfg.get("fa_exact")))
+    # auto: fa_sa.h for every model (its exact-max pre-pass lost the row maxima to a constant fold before the
+    # opaque() fix in fa_sa.h: DeepSeek runs 664 / 668, yattn 100 % off); port = fa_phase.h
+    sa = fa and not fa256 and a.fa_impl != "port"
     assert not (sa and a.fa_dump), "fa_sa.h: no --fa-dump"
     assert not (fa256 and a.fa_dump), "fa_sa256.h: no --fa-dump"
     fa_qt = FA256_QT if fa256 else FA_QT                 # ATTN query tile: Q scale layout (ROPE TM, d[24])
     NBk = SK // FA_BK
     # SILU fused into the gateup GEMM (with the ATTN path; not Gemma-2: its post-norms need the unfused PRENORM)
     fuse = fa and not gemma
-    fuse_rope = fuse and hd == 128                       # ROPE fused into the qkv GEMM (its units are hd 128)
+    aligned = P0 % 64 == 0 and M % 64 == 0               # rope_fast.h's K units: 64-token blocks
+    # ROPE fused into the qkv GEMM (its units are hd 128); auto: only where the unfused phase cannot add the biases
+    fuse_rope = fuse and hd == 128 and (a.rope_fuse == "on" or (a.rope_fuse == "auto" and bias and not aligned))
     assert not fuse or (F % TK == 0 and (2 * F // TN) % 8 == 0 and M % 32 == 0 and M <= 256)
-    # the q/k/v bias is added by the fused ROPE units (ATTN path); Gemma-2's post-norms need the unfused PRENORM
-    assert not bias or fuse_rope, "q/k/v biases need the fused ROPE (ATTN path, hd 128, --ctx >= 768)"
+    # the q/k/v bias (and key centering) is added by the fused ROPE units or rope_fast.h (64-aligned token range);
+    # Gemma-2's post-norms need the unfused PRENORM
+    assert not bias or fuse_rope or aligned, "q/k/v biases: fused ROPE or 64-aligned tokens"
     assert not (gemma and fuse), "Gemma-2 post-norms: unfused PRENORM only"
     assert not a.debug_l0 or not (bias or gemma), "--debug-l0 covers the Llama path only"
 
@@ -789,7 +801,12 @@ def main():
     emu = None
     if mdl is not None and not a.no_emulate:
         print("emulating the quantized pipeline ...", flush=True)
-        emu = emulate(cfg, M, P0, mdl, qw, cos, sin, fa=fa, ilv=fuse)
+        if a.exact_emu:
+            assert sa, "--exact-emu models fa_sa.h (not fa_phase.h / fa_sa256.h)"
+            import emu_exact
+            emu = emu_exact.emulate_exact(sys.modules[__name__], cfg, M, P0, mdl, qw, cos, sin, ilv=fuse)
+        else:
+            emu = emulate(cfg, M, P0, mdl, qw, cos, sin, fa=fa, ilv=fuse)
     gold = {}
     fdg = {}
     if emu is not None and a.fa_dump and fa:            # --fa-dump goldens: head 0, rows 0..63
